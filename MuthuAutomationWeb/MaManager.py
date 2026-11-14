@@ -6,22 +6,45 @@ MaManager – Core Engine for MuthuAutomationWeb
 Fulfills the Socket Live display requirement with real-time system metrics.
 """
 
+# Only os and sys above the patch, and only because the interpreter has ALREADY imported both
+# before any of this runs (site.py uses them during startup) -- so naming them here creates
+# nothing new for eventlet to upgrade. `platform` used to be imported here too, and that was
+# enough to break the patch on Windows every run:
+#
+#   An exception was thrown while monkey_patching for eventlet.
+#   ffi.error: symbol 'RtlNtStatusToDosError' not found in library 'kernel32.dll'
+#   ffi.error: symbol 'CancelIoEx' not found in library 'ntdll.dll'
+#
+# With modules already loaded, monkey_patch() falls back to _upgrade_instances(), which walks
+# existing objects and calls vars() on them. On a cffi library object that triggers cffi's lazy
+# symbol lookup against the wrong DLL (both symbols above are reported against the library the
+# OTHER one actually lives in). eventlet catches it and continues, so the app still starts --
+# but only PART of the patch is applied, which is a worse state than either extreme.
+#
+# sys.platform rather than platform.system(): same answer without importing platform this early.
 import os
-import platform
+import sys
 
 
 def is_android() -> tuple[bool, str]:
-    if os.environ.get("TERMUX_VERSION"): return True, "termux"
-    if os.path.exists("/data/data/com.termux"): return True, "termux"
-    if os.path.exists("/data/data/ru.iiec.pydroid3"): return True, "pydroid"
-    if os.path.exists("/system/build.prop"): return True, "android"
+    if os.environ.get("TERMUX_VERSION"): return True, "termux"           # noqa: E701
+    if os.path.exists("/data/data/com.termux"): return True, "termux"    # noqa: E701
+    if os.path.exists("/data/data/ru.iiec.pydroid3"): return True, "pydroid"   # noqa: E701
+    if os.path.exists("/system/build.prop"): return True, "android"      # noqa: E701
     return False, ""
 
 
 android, _ = is_android()
 
 # ── FIX 1: Monkey-patch FIRST ──────────────────────────────────
-if platform.system() == "Windows":
+if sys.platform == "win32":
+    # Must precede `import eventlet`. eventlet -> dnspython (greendns) -> trio, and
+    # trio._core._windows_cffi builds a cffi lib spanning kernel32 AND ntdll; monkey_patch()
+    # calls vars() on it, cffi resolves every symbol against one DLL, and each symbol that
+    # lives in the other is reported missing (RtlNtStatusToDosError, CancelIoEx). Import order
+    # cannot fix it -- `import eventlet` pulls trio in itself. Skipping greendns means
+    # dnspython, and so trio, is never imported. See MaRun.py for the full note.
+    os.environ.setdefault("EVENTLET_NO_GREENDNS", "yes")
     try:
         import eventlet
 
@@ -36,12 +59,15 @@ elif not android:
     except Exception:
         pass
 
-import time
-import random
-from datetime import datetime
-from flask import Flask, render_template, jsonify
-from flask_socketio import SocketIO
-from flask_cors import CORS
+# Deliberately below the patch -- see above. E402 is the linter noticing exactly that, which is
+# why it is silenced rather than "fixed" by moving these back to the top.
+import platform                                  # noqa: E402
+import time                                      # noqa: E402
+import random                                    # noqa: E402
+from datetime import datetime                    # noqa: E402
+from flask import Flask, render_template, jsonify      # noqa: E402
+from flask_socketio import SocketIO                    # noqa: E402
+from flask_cors import CORS                            # noqa: E402
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'muthu_automation_secret'
